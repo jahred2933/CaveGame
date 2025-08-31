@@ -37,7 +37,8 @@ public class Player : MonoBehaviourPunCallbacks, IPunObservable
 
     [Header("UI")]
     [SerializeField] private TextMeshProUGUI ammoText;
-    [Tooltip("Low ammo threshold (percent of max).")] [Range(0.01f, 0.5f)]
+    [Tooltip("Low ammo threshold (percent of max).")]
+    [Range(0.01f, 0.5f)]
     public float lowAmmoPercent = 0.2f;
     public Color lowAmmoColor = Color.red;
 
@@ -128,10 +129,10 @@ public class Player : MonoBehaviourPunCallbacks, IPunObservable
         {
             photonView.RPC(nameof(RPC_ActivateWeapon), RpcTarget.AllBuffered);
 
-            PhotonView pickupPhotonView = other.GetComponent<PhotonView>();
-            if (pickupPhotonView != null)
+            var pickup = other.GetComponent<PickupItemScript>();
+            if (pickup != null)
             {
-                pickupPhotonView.RPC("RPC_DestroyPickup", RpcTarget.AllBuffered);
+                pickup.Local_DestroyPickup();
             }
         }
     }
