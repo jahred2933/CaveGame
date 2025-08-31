@@ -1,7 +1,6 @@
 using UnityEngine;
-using Photon.Pun;
 
-public class PickupItemScript : MonoBehaviourPun
+public class PickupItemScript : MonoBehaviour
 {
     // Assign this in the Inspector to set which object to disable when picked up
     public GameObject objectToDisable;
@@ -12,18 +11,6 @@ public class PickupItemScript : MonoBehaviourPun
         gameObject.SetActive(false);
 
         // Disable the specified object if assigned
-        if (objectToDisable != null)
-        {
-            objectToDisable.SetActive(false);
-        }
-    }
-
-    // This RPC disables the pickup and the specified object for all players in the room.
-    [PunRPC]
-    public void RPC_DestroyPickup()
-    {
-        gameObject.SetActive(false);
-
         if (objectToDisable != null)
         {
             objectToDisable.SetActive(false);
