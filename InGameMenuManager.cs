@@ -40,6 +40,7 @@ public class InGameMenuManager : MonoBehaviourPunCallbacks
     public Button btnMoveSpeed;
     public Button btnExtraLife;
     public TMP_Text pointsText;
+    public TMP_Text levelText;
 
     [Header("Testing")]
     public int testPoints = 0; // Set in Inspector for easy test points
@@ -392,6 +393,9 @@ public class InGameMenuManager : MonoBehaviourPunCallbacks
         SetUpgradeButtonText(btnHealthRegen, "HealthRegen", prof);
         SetUpgradeButtonText(btnMoveSpeed, "MoveSpeed", prof);
         SetUpgradeButtonText(btnExtraLife, "ExtraLife", prof);
+
+        if (levelText != null)
+            levelText.text = $"Level: {prof.playerLevel}";
 
         int pts = PointsManager.Instance != null ? PointsManager.Instance.LocalSpendablePoints : -1;
         Debug.Log($"[Menu] UpdateUpgradeButtonTexts complete. Points={pts}");
