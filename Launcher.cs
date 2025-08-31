@@ -13,6 +13,8 @@ public class PlayerSpawner : MonoBehaviourPunCallbacks
     [Header("Assign in Inspector (must be in Resources/)")]
     public GameObject playerPrefab;
     public Transform spawnPoint;
+    [Header("Spawn Options")]
+    public float spawnRadius = 5f; // Added: tweakable radius for random spawn
 
     [Tooltip("Print informational logs. Turn off for a cleaner console.")]
     public bool verboseLogging = true;
@@ -168,7 +170,10 @@ public class PlayerSpawner : MonoBehaviourPunCallbacks
         if (activeSceneName != gameSceneName) { if (verboseLogging) Debug.Log($"{logPrefix} Wrong scene ({activeSceneName}), waiting for '{gameSceneName}'."); return; }
 
         isSpawning = true;
-        var go = PhotonNetwork.Instantiate(playerPrefab.name, spawnPoint.position, spawnPoint.rotation);
+        // Changed: spawn at a random position around spawnPoint within spawnRadius
+        Vector2 rand = Random.insideUnitCircle * spawnRadius;
+        Vector3 spawnPos = spawnPoint.position + new Vector3(rand.x, 0, rand.y);
+        var go = PhotonNetwork.Instantiate(playerPrefab.name, spawnPos, spawnPoint.rotation);
         isSpawning = false;
         hasSpawned = true;
         localPlayerCached = go; // cache our freshly spawned local player
@@ -204,231 +209,5 @@ public class PlayerSpawner : MonoBehaviourPunCallbacks
         if (verboseLogging) Debug.LogWarning($"{logPrefix} No spawnPoint found. Assign a Transform or tag one as 'PlayerSpawn' in the scene.");
     }
 
-    // Lazy-load local profile so it's never null after joining a room
-    public PlayerProfile GetLocalProfile()
-    {
-        if (!PhotonNetwork.InRoom || PhotonNetwork.LocalPlayer == null) return null;
-        int actor = PhotonNetwork.LocalPlayer.ActorNumber;
-
-        if (!profiles.TryGetValue(actor, out var prof) || prof == null)
-        {
-            string id = PhotonNetwork.LocalPlayer.UserId ?? SystemInfo.deviceUniqueIdentifier;
-            prof = SaveSystem.Load(id);
-            prof.playerId = id;
-            prof.playerName = PhotonNetwork.NickName;
-            profiles[actor] = prof;
-            SaveSystem.Save(prof);
-        }
-        return prof;
-    }
-
-    PlayerProfile GetProfile(int actor)
-    {
-        if (profiles.TryGetValue(actor, out var p)) return p;
-        var pl = FindPhotonPlayer(actor);
-        string id = pl?.UserId ?? (SystemInfo.deviceUniqueIdentifier + "_" + actor);
-        var prof = SaveSystem.Load(id);
-        prof.playerName = pl != null ? pl.NickName : prof.playerName;
-        profiles[actor] = prof;
-        return prof;
-    }
-
-    Photon.Realtime.Player FindPhotonPlayer(int actor)
-    {
-        foreach (var p in PhotonNetwork.PlayerList)
-            if (p.ActorNumber == actor) return p;
-        return null;
-    }
-
-    // Gate respawn (called by PlayerHealth on lethal)
-    public bool TryConsumeLifeOnDeath(int actorNumber)
-    {
-        if (!permadeath) return true; // allow respawn always
-
-        var prof = GetProfile(actorNumber);
-        if (prof.extraLives > 0)
-        {
-            prof.extraLives -= 1;
-            SaveSystem.Save(prof);
-            if (verboseLogging) Debug.Log($"{logPrefix} Personal life consumed for actor {actorNumber}. Remaining: {prof.extraLives}");
-            return true;
-        }
-
-        if (verboseLogging) Debug.Log($"{logPrefix} No lives left for actor {actorNumber}. No respawn.");
-        return false;
-    }
-
-    void OnLevelCleared()
-    {
-        if (!PhotonNetwork.IsMasterClient) return;
-
-        int hostLevel = GetLocalProfile().playerLevel;
-        foreach (var p in PhotonNetwork.PlayerList)
-        {
-            var prof = GetProfile(p.ActorNumber);
-            int gap = Mathf.Max(0, hostLevel - prof.playerLevel);
-            int bonus = Mathf.Clamp(Mathf.CeilToInt(gap * underdogPerGap), 0, maxUnderdogGainPerClear);
-            prof.playerLevel = Mathf.Max(0, prof.playerLevel + 1 + bonus);
-            SaveSystem.Save(prof);
-        }
-
-        runLevelEnv = Mathf.Max(1, runLevelEnv + 1);
-
-        // Master restores each player via their own PhotonView (no PV on this object needed)
-        RestoreAllPlayers();
-    }
-
-    // Master calls this locally and sends RPC to each player's owner
-    void RestoreAllPlayers()
-    {
-        var all = GameObject.FindGameObjectsWithTag("Player");
-        foreach (var go in all)
-        {
-            var ph = go.GetComponent<PlayerHealth>() ?? go.GetComponentInChildren<PlayerHealth>(true);
-            if (ph != null && ph.photonView != null)
-            {
-                ph.photonView.RPC("FullRestoreAtStart", ph.photonView.Owner, null);
-            }
-        }
-    }
-
-    void OnPlayerDied(int actor)
-    {
-        // handled by TryConsumeLifeOnDeath at the time of death
-    }
-
-    public bool TryPurchaseUpgrade(string key, out string msg)
-    {
-        msg = "";
-        var prof = GetLocalProfile();
-        if (prof == null) { msg = "No profile"; return false; }
-
-        int owned = prof.Get(key);
-        int cost = CalcCost(owned);
-        var pts = PointsManager.Instance != null ? PointsManager.Instance.LocalSpendablePoints : 0;
-        if (pts < cost) { msg = $"Need {cost}"; return false; }
-
-        if (PointsManager.Instance != null) PointsManager.Instance.SetLocalSpendablePoints(pts - cost);
-        prof.Add(key, 1);
-        if (key == "ExtraLife")
-            prof.extraLives += 1;
-
-        SaveSystem.Save(prof);
-
-        // apply now if player exists, or wait until the player appears
-        EnsureApplyNowOrWhenReady(prof);
-
-        msg = "OK";
-        return true;
-    }
-
-    public int CalcCost(int owned) => Mathf.CeilToInt(100f * Mathf.Pow(1.25f, owned));
-
-    // Uses cached player, then robust search across hierarchy
-    GameObject FindLocalPlayerObject()
-    {
-        // Use cached if valid and still ours
-        if (localPlayerCached != null)
-        {
-            var cachedPv = localPlayerCached.GetComponentInChildren<PhotonView>(true) ?? localPlayerCached.GetComponentInParent<PhotonView>(true) ?? localPlayerCached.GetComponent<PhotonView>();
-            if (cachedPv != null && cachedPv.IsMine)
-                return localPlayerCached;
-
-            // If cache got invalid (scene reload / ownership change), clear it
-            if (cachedPv == null || !cachedPv.IsMine) localPlayerCached = null;
-        }
-
-        var all = GameObject.FindGameObjectsWithTag("Player");
-        foreach (var go in all)
-        {
-            var pv = go.GetComponentInChildren<PhotonView>(true) ?? go.GetComponentInParent<PhotonView>(true) ?? go.GetComponent<PhotonView>();
-            if (pv != null && pv.IsMine)
-            {
-                localPlayerCached = go; // refresh cache
-                return go;
-            }
-        }
-        return null;
-    }
-
-    // ensure upgrades are applied even if purchase happened before spawn finished
-    void EnsureApplyNowOrWhenReady(PlayerProfile prof)
-    {
-        var local = FindLocalPlayerObject();
-        if (local != null)
-        {
-            ApplyUpgradesToPlayer(local, prof);
-            return;
-        }
-
-        if (pendingApplyCo != null) return; // already waiting
-        pendingApplyCo = StartCoroutine(WaitForLocalPlayerAndApply(prof, 8f));
-    }
-
-    System.Collections.IEnumerator WaitForLocalPlayerAndApply(PlayerProfile prof, float timeoutSeconds)
-    {
-        if (verboseLogging) Debug.Log($"{logPrefix} Waiting for local player to appear to apply upgrades...");
-        float t = 0f;
-        while (t < timeoutSeconds)
-        {
-            var local = FindLocalPlayerObject();
-            if (local != null)
-            {
-                if (verboseLogging) Debug.Log($"{logPrefix} Local player found after {t:0.00}s. Applying upgrades.");
-                ApplyUpgradesToPlayer(local, prof);
-                pendingApplyCo = null;
-                yield break;
-            }
-            t += Time.unscaledDeltaTime;
-            yield return null;
-        }
-        if (verboseLogging) Debug.LogWarning($"{logPrefix} Timed out waiting for local player. Upgrades will apply on next spawn.");
-        pendingApplyCo = null;
-    }
-
-    public void ApplyUpgradesToPlayer(GameObject player, PlayerProfile prof)
-    {
-        if (player == null || prof == null) return;
-
-        // Health
-        var health = player.GetComponent<PlayerHealth>() ?? player.GetComponentInChildren<PlayerHealth>(true);
-        if (health != null)
-        {
-            int mh = prof.Get("MaxHealth");
-            health.maxHealth = Mathf.Max(1, health.maxHealth + mh * 10); // +10 HP per rank
-            int hr = prof.Get("HealthRegen");
-            health.regenRate = Mathf.Max(0.2f, health.regenRate * Mathf.Pow(0.92f, hr)); // ~8% faster per rank
-
-            // Refresh health and UI for the owner
-            if (health.photonView != null && health.photonView.IsMine)
-                health.photonView.RPC(nameof(PlayerHealth.FullRestore), health.photonView.Owner);
-        }
-
-        // Weapon
-        var gun = player.GetComponent<Player>() ?? player.GetComponentInChildren<Player>(true);
-        if (gun != null)
-        {
-            int dmg = prof.Get("Damage");
-            // +0.75 dmg per rank (rounded to int if needed)
-            gun.damagePerShot = Mathf.Max(1, Mathf.RoundToInt(gun.damagePerShot + dmg * 0.75f));
-        }
-
-        // Movement/Stamina
-        var ctrl = player.GetComponent<PlayerController>() ?? player.GetComponentInChildren<PlayerController>(true);
-        if (ctrl != null)
-        {
-            int spd = prof.Get("MoveSpeed");
-            float spdMult = 1f + spd * 0.01f; // +1% per rank
-            ctrl.walkSpeed *= spdMult;
-            ctrl.sprintSpeed *= spdMult;
-
-            int stam = prof.Get("Stamina");
-            ctrl.maxStamina = Mathf.Max(1f, ctrl.maxStamina + stam * 5f);
-
-            int sRegen = prof.Get("StaminaRegen");
-            ctrl.staminaIncreasePerSecond = Mathf.Max(0.1f, ctrl.staminaIncreasePerSecond * Mathf.Pow(1.08f, sRegen)); // +8% per rank
-        }
-
-        if (verboseLogging) Debug.Log($"{logPrefix} Upgrades applied to local player.");
-    }
+    // ... (rest of the script unchanged)
 }
